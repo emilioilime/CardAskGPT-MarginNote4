@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CardAskGPT Browser Fixture</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: #f5f5f3;
+        color: #1f1f1e;
+      }
+      header {
+        height: 64px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 24px;
+        border-bottom: 1px solid #ddd;
+        background: #fff;
+      }
+      #temporary {
+        border: 1px solid #c9c9c5;
+        background: #fff;
+        border-radius: 999px;
+        padding: 10px 16px;
+        font-weight: 600;
+      }
+      #temporary[aria-pressed="true"] {
+        color: #fff;
+        border-color: #20211f;
+        background: #20211f;
+      }
+      main {
+        width: min(860px, calc(100% - 48px));
+        margin: 48px auto;
+      }
+      #state {
+        padding: 14px 16px;
+        border: 1px solid #d8d7d2;
+        border-radius: 12px;
+        background: #fff;
+      }
+      #previews {
+        display: grid;
+        gap: 16px;
+        margin: 22px 0;
+      }
+      #previews img {
+        width: min(100%, 620px);
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+      }
+      .composer {
+        min-height: 116px;
+        padding: 18px;
+        border: 1px solid #c8c8c3;
+        border-radius: 26px;
+        background: #fff;
+      }
+      #prompt-textarea {
+        min-height: 48px;
+        outline: none;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>ChatGPT 模拟页面</strong>
+      <button id="temporary" aria-label="Temporary chat" aria-pressed="false">
+        Temporary
+      </button>
+    </header>
+    <main>
+      <div id="state">等待插件注入……</div>
+      <div id="previews"></div>
+      <div class="composer">
+        <div id="prompt-textarea" contenteditable="true"></div>
+        <input id="file-input" type="file" accept="image/*" multiple hidden />
+      </div>
+    </main>
+
+    <script src="../src/chatgptBridge.js"></script>
+    <script>
+      const state = document.querySelector("#state")
+      const temporary = document.querySelector("#temporary")
+      const input = document.querySelector("#file-input")
+      const previews = document.querySelector("#previews")
+
+      temporary.addEventListener("click", () => {
+        temporary.setAttribute("aria-pressed", "true")
+        temporary.textContent = "Temporary enabled"
+      })
+
+      input.addEventListener("change", () => {
+        previews.replaceChildren()
+        Array.from(input.files).forEach((file) => {
+          const image = document.createElement("img")
+          image.alt = file.name
+          image.src = URL.createObjectURL(file)
+          previews.append(image)
+        })
+      })
+
+      document.addEventListener("cardaskgpt-status", (event) => {
+        const detail = event.detail || {}
+        state.textContent = `${detail.code}: ${detail.detail}`
+        state.dataset.code = detail.code || ""
+      })
+
+      const payload = {
+        id: "fixture-note",
+        title: "事务的隔离性",
+        page: "42",
+        blocks: [
+          {
+            type: "text",
+            kind: "title",
+            text: "隔离性（Isolation）"
+          },
+          {
+            type: "text",
+            kind: "excerpt",
+            text:
+              "定义：当多个事务并发访问数据库时，一个事务所做的修改在最终提交之前，对其他事务是不可见的。\n\n实现原理：主要由 MVCC（多版本并发控制）和锁共同保证。"
+          },
+          {
+            type: "text",
+            kind: "comment",
+            text:
+              "这是卡片中的补充批注。插件应把标题、正文与批注排版成图片，并只附加到输入框，不自动发送。"
+          },
+          {
+            type: "image",
+            kind: "comment-image",
+            dataURL:
+              "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='160' viewBox='0 0 640 160'%3E%3Crect width='640' height='160' rx='20' fill='%23e5eadf'/%3E%3Cpath d='M70 80h145M425 80h145' stroke='%234f776d' stroke-width='8' stroke-linecap='round'/%3E%3Crect x='225' y='36' width='190' height='88' rx='16' fill='%23fffdf8' stroke='%234f776d' stroke-width='4'/%3E%3Ctext x='320' y='92' text-anchor='middle' font-family='sans-serif' font-size='26' fill='%2325423b'%3EMVCC + Lock%3C/text%3E%3C/svg%3E"
+          }
+        ]
+      }
+
+      eval(CardAskGPTBridge.makeInjection(payload, true))
+    </script>
+  </body>
+</html>
