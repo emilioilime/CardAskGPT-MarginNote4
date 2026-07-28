@@ -155,84 +155,152 @@ JSB.newAddon = function (mainPath) {
     return extension.panel
   }
 
-  function currentFocusNote(extension) {
-    try {
-      var studyController = extension.app.studyController(extension.window)
-      var notebookController = studyController.notebookController
-      var note =
-        notebookController.focusNote || notebookController.visibleFocusNote
-      if (note) return note.note || note
-
-      var selected = notebookController.mindmapView.selViewLst
-      if (selected && selected.length) {
-        var selectedNote = selected[0].note
-        return (selectedNote && selectedNote.note) || selectedNote
-      }
-    } catch (error) {
-      return null
+  function nativeArray(value) {
+    if (!value) return []
+    if (Array.isArray(value)) return value
+    var count =
+      typeof value.count === "function"
+        ? Number(value.count())
+        : Number(value.length || 0)
+    var result = []
+    for (var index = 0; index < count; index++) {
+      result.push(
+        typeof value.objectAtIndex === "function"
+          ? value.objectAtIndex(index)
+          : value[index]
+      )
     }
+    return result
+  }
+
+  function noteFromSelectionItem(item) {
+    if (!item) return null
+    if (item.note && item.note.note && item.note.note.noteId) {
+      return item.note.note
+    }
+    if (item.note && item.note.noteId) return item.note
+    if (item.noteId) return item
     return null
   }
 
+  function currentSelectedNotes(extension, fallbackNote) {
+    var notes = []
+    var seen = {}
+    try {
+      var studyController = extension.app.studyController(extension.window)
+      var notebookController = studyController.notebookController
+      var selected = nativeArray(notebookController.mindmapView.selViewLst)
+      for (var index = 0; index < selected.length; index++) {
+        var note = noteFromSelectionItem(selected[index])
+        if (!note || !note.noteId) continue
+        var noteId = stringValue(note.noteId)
+        if (seen[noteId]) continue
+        seen[noteId] = true
+        notes.push(note)
+      }
+    } catch (error) {
+      notes = []
+    }
+
+    if (!notes.length && fallbackNote) {
+      var fallback = noteFromSelectionItem(fallbackNote) || fallbackNote
+      if (fallback && fallback.noteId) notes.push(fallback)
+    }
+    return notes
+  }
+
+  function selectionSignature(notes) {
+    return notes
+      .map(function (note) {
+        return stringValue(note.noteId)
+      })
+      .sort()
+      .join("|")
+  }
+
+  function stopSelectionSync(extension) {
+    if (extension.selectionTimer) {
+      extension.selectionTimer.invalidate()
+      extension.selectionTimer = null
+    }
+  }
+
   function stopFocusPolling(extension) {
+    stopSelectionSync(extension)
     if (extension.focusTimer) {
       extension.focusTimer.invalidate()
       extension.focusTimer = null
     }
   }
 
-  function handleCardNote(extension, note, source) {
-    if (!extension.enabled || !note || !note.noteId) return
+  function handleCardSelection(extension, notes, source) {
+    if (!extension.enabled) return
+    notes = notes || []
+    var signature = selectionSignature(notes)
+    if (!signature && !extension.lastSelectionSignature) return
     var now = Date.now()
     if (
-      extension.lastNoteId === note.noteId &&
+      extension.lastSelectionSignature === signature &&
       now - extension.lastHandledAt < 650
     ) {
       return
     }
-    extension.lastNoteId = note.noteId
+    extension.lastSelectionSignature = signature
     extension.lastHandledAt = now
 
     try {
-      log("card captured from " + source + ": " + note.noteId)
-      extension.app.showHUD(
-        "已捕获卡片，正在打开 ChatGPT…",
-        extension.window,
-        1.2
-      )
-      var payload = serializeCard(note)
+      if (!notes.length) {
+        log("selection cleared from " + source)
+        if (extension.panel) {
+          CardAskGPTPanelAPI.enqueueCards(extension.panel, [], false)
+        }
+        return
+      }
+      log("cards captured from " + source + ": " + signature)
+      var payloads = notes.map(function (note) {
+        return serializeCard(note)
+      })
       var panel = ensurePanelAttached(extension)
       panel.view.hidden = false
       panel.webview.hidden = false
-      CardAskGPTPanelAPI.enqueueCard(panel, payload)
+      CardAskGPTPanelAPI.enqueueCards(panel, payloads)
     } catch (error) {
-      extension.app.showHUD(
-        "卡片处理失败：" +
-          stringValue(error && error.message ? error.message : error),
-        extension.window,
-        5
-      )
       log("card handling failed: " + stringValue(error))
     }
   }
 
+  function scheduleSelectionSync(extension, fallbackNote, source) {
+    stopSelectionSync(extension)
+    extension.selectionTimer = NSTimer.scheduledTimerWithTimeInterval(
+      0.12,
+      false,
+      function () {
+        extension.selectionTimer = null
+        if (!extension.enabled) return
+        var notes = currentSelectedNotes(extension, fallbackNote)
+        extension.lastObservedSelectionSignature = selectionSignature(notes)
+        handleCardSelection(extension, notes, source)
+      }
+    )
+  }
+
   function startFocusPolling(extension) {
     stopFocusPolling(extension)
-    var current = currentFocusNote(extension)
-    extension.lastObservedFocusNoteId =
-      current && current.noteId ? stringValue(current.noteId) : ""
+    var current = currentSelectedNotes(extension, null)
+    extension.lastObservedSelectionSignature = selectionSignature(current)
 
     extension.focusTimer = NSTimer.scheduledTimerWithTimeInterval(
       0.35,
       true,
       function () {
         if (!extension.enabled) return
-        var note = currentFocusNote(extension)
-        if (!note || !note.noteId) return
-        var noteId = stringValue(note.noteId)
-        if (noteId === extension.lastObservedFocusNoteId) return
-        extension.lastObservedFocusNoteId = noteId
-        handleCardNote(extension, note, "focus-poll")
+        var notes = currentSelectedNotes(extension, null)
+        var signature = selectionSignature(notes)
+        if (signature === extension.lastObservedSelectionSignature) {
+          return
+        }
+        extension.lastObservedSelectionSignature = signature
+        handleCardSelection(extension, notes, "selection-poll")
       }
     )
   }
@@ -244,9 +312,10 @@ JSB.newAddon = function (mainPath) {
         self.app = Application.sharedInstance()
         self.panel = null
         self.enabled = false
-        self.lastNoteId = ""
+        self.lastSelectionSignature = ""
         self.lastHandledAt = 0
-        self.lastObservedFocusNoteId = ""
+        self.lastObservedSelectionSignature = ""
+        self.selectionTimer = null
         self.focusTimer = null
 
         self.storedTemporary = NSUserDefaults.standardUserDefaults().objectForKey(
@@ -290,7 +359,8 @@ JSB.newAddon = function (mainPath) {
 
       notebookWillClose: function () {
         self.enabled = false
-        self.lastNoteId = ""
+        self.lastSelectionSignature = ""
+        self.lastObservedSelectionSignature = ""
         stopFocusPolling(self)
         if (self.panel) {
           CardAskGPTPanelAPI.cancelPendingCard(self.panel)
@@ -324,20 +394,9 @@ JSB.newAddon = function (mainPath) {
             var panel = ensurePanelAttached(self)
             panel.view.hidden = true
             startFocusPolling(self)
-            self.app.showHUD(
-              "Card → ChatGPT v0.1.3 已开启：点击卡片即可附加图片",
-              self.window,
-              2
-            )
             log("enabled")
           } catch (error) {
             self.enabled = false
-            self.app.showHUD(
-              "Card → ChatGPT 初始化失败：" +
-                stringValue(error && error.message ? error.message : error),
-              self.window,
-              5
-            )
             log("panel initialization failed: " + stringValue(error))
           }
         } else {
@@ -346,7 +405,6 @@ JSB.newAddon = function (mainPath) {
             CardAskGPTPanelAPI.cancelPendingCard(self.panel)
             self.panel.view.hidden = true
           }
-          self.app.showHUD("Card → ChatGPT 已关闭", self.window, 1.5)
           log("disabled")
         }
         self.app.studyController(self.window).refreshAddonCommands()
@@ -361,8 +419,7 @@ JSB.newAddon = function (mainPath) {
         } catch (error) {}
 
         var note = sender.userInfo.note.note || sender.userInfo.note
-        self.lastObservedFocusNoteId = stringValue(note.noteId)
-        handleCardNote(self, note, "PopupMenuOnNote")
+        scheduleSelectionSync(self, note, "PopupMenuOnNote")
       }
     },
     {

@@ -49,15 +49,68 @@
         border-radius: 12px;
         background: #fff;
       }
+      #answer-card {
+        margin: 0 0 24px;
+        padding: 20px;
+        border: 1px solid #d8d7d2;
+        border-radius: 18px;
+        background: #fff;
+      }
+      #answer {
+        line-height: 1.7;
+      }
+      #copy-answer {
+        margin-top: 14px;
+        padding: 8px 12px;
+        border: 1px solid #c8c8c3;
+        border-radius: 9px;
+        background: #fff;
+      }
+      #clipboard-state {
+        margin-top: 12px;
+        color: #285b32;
+      }
+      #markdown-block {
+        position: relative;
+        margin-top: 18px;
+        padding: 18px;
+        border-radius: 14px;
+        background: #f3f3f1;
+      }
+      #copy-markdown {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+      }
+      #markdown-block pre {
+        margin: 18px 0 0;
+        white-space: pre-wrap;
+      }
       #previews {
         display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
         gap: 16px;
-        margin: 22px 0;
+        margin: 0 0 18px;
       }
-      #previews img {
-        width: min(100%, 620px);
+      .attachment {
+        position: relative;
+      }
+      .attachment img {
+        display: block;
+        width: 100%;
         border-radius: 12px;
         box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+      }
+      .attachment button {
+        position: absolute;
+        top: 8px;
+        right: 8px;
+        width: 30px;
+        height: 30px;
+        border: 0;
+        border-radius: 999px;
+        color: #fff;
+        background: rgb(0 0 0 / 72%);
       }
       .composer {
         min-height: 116px;
@@ -80,12 +133,40 @@
       </button>
     </header>
     <main>
+      <article
+        id="answer-card"
+        data-message-author-role="assistant"
+        aria-label="ChatGPT 测试回答"
+      >
+        <div id="answer" class="markdown">
+          <h2>这是 ChatGPT 的测试回答</h2>
+          <p>复制后应保留 <strong>粗体</strong>、<em>斜体</em>和代码格式。</p>
+        </div>
+        <button id="copy-answer" type="button" aria-label="Copy response">
+          复制回答
+        </button>
+        <section id="markdown-block" data-testid="code-block-markdown">
+          <strong>Markdown</strong>
+          <button
+            id="copy-markdown"
+            type="button"
+            aria-label="Copy code"
+            data-testid="copy-code-button"
+          >
+            复制
+          </button>
+          <pre><code># 原子性（Atomicity）
+
+**定义**：事务中的操作必须全部完成。</code></pre>
+        </section>
+        <div id="clipboard-state">等待复制测试……</div>
+      </article>
       <div id="state">等待插件注入……</div>
-      <div id="previews"></div>
-      <div class="composer">
+      <form class="composer">
+        <div id="previews"></div>
         <div id="prompt-textarea" contenteditable="true"></div>
         <input id="file-input" type="file" accept="image/*" multiple hidden />
-      </div>
+      </form>
     </main>
 
     <script src="../src/chatgptBridge.js"></script>
@@ -94,6 +175,12 @@
       const temporary = document.querySelector("#temporary")
       const input = document.querySelector("#file-input")
       const previews = document.querySelector("#previews")
+      const answer = document.querySelector("#answer")
+      const markdownCode = document.querySelector("#markdown-block code")
+      const clipboardState = document.querySelector("#clipboard-state")
+      document.querySelector("form").addEventListener("submit", (event) => {
+        event.preventDefault()
+      })
 
       temporary.addEventListener("click", () => {
         temporary.setAttribute("aria-pressed", "true")
@@ -101,12 +188,20 @@
       })
 
       input.addEventListener("change", () => {
-        previews.replaceChildren()
         Array.from(input.files).forEach((file) => {
+          const attachment = document.createElement("div")
+          attachment.className = "attachment"
+          attachment.dataset.filename = file.name
           const image = document.createElement("img")
           image.alt = file.name
           image.src = URL.createObjectURL(file)
-          previews.append(image)
+          const remove = document.createElement("button")
+          remove.type = "button"
+          remove.setAttribute("aria-label", `Remove file ${file.name}`)
+          remove.textContent = "×"
+          remove.addEventListener("click", () => attachment.remove())
+          attachment.append(image, remove)
+          previews.append(attachment)
         })
       })
 
@@ -116,38 +211,69 @@
         state.dataset.code = detail.code || ""
       })
 
-      const payload = {
-        id: "fixture-note",
-        title: "事务的隔离性",
-        page: "42",
+      document.addEventListener("cardaskgpt-clipboard", (event) => {
+        const detail = event.detail || {}
+        const payload = detail.payload || {}
+        window.fixtureClipboardPayload = payload
+        window.fixtureCopiedText = payload.plainText || ""
+        const formats = [
+          payload.plainText ? "text" : "",
+          payload.html ? "html" : "",
+          payload.rtf ? "rtf" : "",
+          payload.markdown ? "markdown" : ""
+        ].filter(Boolean)
+        clipboardState.textContent =
+          `已捕获原始格式：${formats.join(" + ")}；${window.fixtureCopiedText}`
+        clipboardState.dataset.source = detail.source || ""
+      })
+
+      eval(CardAskGPTBridge.makeClipboardBridge())
+      document.querySelector("#copy-answer").addEventListener("click", () => {
+        navigator.clipboard.write([
+          new ClipboardItem({
+            "text/plain": new Blob([answer.innerText], {
+              type: "text/plain"
+            }),
+            "text/html": new Blob([answer.innerHTML], {
+              type: "text/html"
+            })
+          })
+        ])
+      })
+      document
+        .querySelector("#copy-markdown")
+        .addEventListener("click", () => {
+          navigator.clipboard.writeText(markdownCode.textContent)
+        })
+
+      window.makeFixturePayload = (id, title, page = "42") => ({
+        id,
+        title,
+        page,
         blocks: [
-          {
-            type: "text",
-            kind: "title",
-            text: "隔离性（Isolation）"
-          },
+          { type: "text", kind: "title", text: title },
           {
             type: "text",
             kind: "excerpt",
             text:
-              "定义：当多个事务并发访问数据库时，一个事务所做的修改在最终提交之前，对其他事务是不可见的。\n\n实现原理：主要由 MVCC（多版本并发控制）和锁共同保证。"
+              "定义：当前选中的 MarginNote 卡片应与 ChatGPT 输入框附件保持同步。"
           },
           {
             type: "text",
             kind: "comment",
             text:
-              "这是卡片中的补充批注。插件应把标题、正文与批注排版成图片，并只附加到输入框，不自动发送。"
-          },
-          {
-            type: "image",
-            kind: "comment-image",
-            dataURL:
-              "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='640' height='160' viewBox='0 0 640 160'%3E%3Crect width='640' height='160' rx='20' fill='%23e5eadf'/%3E%3Cpath d='M70 80h145M425 80h145' stroke='%234f776d' stroke-width='8' stroke-linecap='round'/%3E%3Crect x='225' y='36' width='190' height='88' rx='16' fill='%23fffdf8' stroke='%234f776d' stroke-width='4'/%3E%3Ctext x='320' y='92' text-anchor='middle' font-family='sans-serif' font-size='26' fill='%2325423b'%3EMVCC + Lock%3C/text%3E%3C/svg%3E"
+              "单选时只保留一张图片；多选三张卡片时只保留三张图片。"
           }
         ]
+      })
+
+      window.injectFixture = (payloads) => {
+        eval(CardAskGPTBridge.makeInjection(payloads, true))
       }
 
-      eval(CardAskGPTBridge.makeInjection(payload, true))
+      window.injectFixture([
+        window.makeFixturePayload("fixture-note", "隔离性（Isolation）")
+      ])
     </script>
   </body>
 </html>

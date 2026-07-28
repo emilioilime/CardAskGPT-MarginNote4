@@ -1,4 +1,86 @@
 var CardAskGPTPanelAPI = (function () {
+  var PANEL_MIN_WIDTH = 350
+  var PANEL_MIN_HEIGHT = 280
+  var PANEL_FRAME_X_KEY = "CardAskGPT_PanelX"
+  var PANEL_FRAME_Y_KEY = "CardAskGPT_PanelY"
+  var PANEL_FRAME_WIDTH_KEY = "CardAskGPT_PanelWidth"
+  var PANEL_FRAME_HEIGHT_KEY = "CardAskGPT_PanelHeight"
+
+  function clampNumber(value, minimum, maximum) {
+    var number = Number(value)
+    if (isNaN(number)) number = minimum
+    return Math.max(minimum, Math.min(maximum, number))
+  }
+
+  function savedNumber(key) {
+    try {
+      var value = NSUserDefaults.standardUserDefaults().objectForKey(key)
+      if (value === undefined || value === null) return null
+      var number = Number(value)
+      return isNaN(number) ? null : number
+    } catch (error) {
+      return null
+    }
+  }
+
+  function normalizePanelFrame(frame, bounds) {
+    bounds = bounds || { x: 0, y: 0, width: 1920, height: 1080 }
+    frame = frame || {}
+    var inset = 8
+    var availableWidth = Math.max(1, bounds.width - inset * 2)
+    var availableHeight = Math.max(1, bounds.height - inset * 2)
+    var minimumWidth = Math.min(PANEL_MIN_WIDTH, availableWidth)
+    var minimumHeight = Math.min(PANEL_MIN_HEIGHT, availableHeight)
+    var width = clampNumber(frame.width, minimumWidth, availableWidth)
+    var height = clampNumber(frame.height, minimumHeight, availableHeight)
+    var minimumX = bounds.x + inset
+    var minimumY = bounds.y + inset
+    var maximumX = Math.max(
+      minimumX,
+      bounds.x + bounds.width - width - inset
+    )
+    var maximumY = Math.max(
+      minimumY,
+      bounds.y + bounds.height - height - inset
+    )
+    return {
+      x: clampNumber(frame.x, minimumX, maximumX),
+      y: clampNumber(frame.y, minimumY, maximumY),
+      width: width,
+      height: height
+    }
+  }
+
+  function initialPanelFrame(controller, bounds) {
+    var defaultWidth = controller.app.osType === 2 ? 460 : 420
+    var width = savedNumber(PANEL_FRAME_WIDTH_KEY)
+    var height = savedNumber(PANEL_FRAME_HEIGHT_KEY)
+    if (width === null) width = Math.min(defaultWidth, bounds.width - 16)
+    if (height === null) height = bounds.height - 16
+    var x = savedNumber(PANEL_FRAME_X_KEY)
+    var y = savedNumber(PANEL_FRAME_Y_KEY)
+    if (x === null) x = bounds.x + bounds.width - width - 10
+    if (y === null) y = bounds.y + 8
+    return normalizePanelFrame(
+      { x: x, y: y, width: width, height: height },
+      bounds
+    )
+  }
+
+  function savePanelFrame(controller) {
+    if (!controller.view || !controller.view.frame) return
+    var frame = controller.view.frame
+    try {
+      var defaults = NSUserDefaults.standardUserDefaults()
+      defaults.setObjectForKey(frame.x, PANEL_FRAME_X_KEY)
+      defaults.setObjectForKey(frame.y, PANEL_FRAME_Y_KEY)
+      defaults.setObjectForKey(frame.width, PANEL_FRAME_WIDTH_KEY)
+      defaults.setObjectForKey(frame.height, PANEL_FRAME_HEIGHT_KEY)
+      if (defaults.synchronize) defaults.synchronize()
+    } catch (error) {}
+    controller._preferredFrame = frame
+  }
+
   function updateTemporaryButton(controller) {
     if (!controller.temporaryButton) return
     if (controller.temporaryChatEnabled) {
@@ -20,13 +102,31 @@ var CardAskGPTPanelAPI = (function () {
     }
   }
 
+  function desiredChatURL(controller) {
+    return controller.temporaryChatEnabled
+      ? "https://chatgpt.com/?temporary-chat=true"
+      : "https://chatgpt.com/"
+  }
+
+  function isTemporaryURL(url) {
+    return /[?&]temporary-chat=true(?:[&#]|$)/i.test(String(url || ""))
+  }
+
   function layoutSubviews(controller) {
     var bounds = controller.view.bounds
     var toolbarHeight = 36
+    if (controller.dragRegion) {
+      controller.dragRegion.frame = {
+        x: 0,
+        y: 0,
+        width: Math.max(120, bounds.width - 150),
+        height: toolbarHeight
+      }
+    }
     controller.titleButton.frame = {
       x: 10,
       y: 2,
-      width: Math.max(120, bounds.width - 230),
+      width: Math.max(120, bounds.width - 160),
       height: 32
     }
     controller.temporaryButton.frame = {
@@ -53,6 +153,14 @@ var CardAskGPTPanelAPI = (function () {
       width: bounds.width,
       height: bounds.height - toolbarHeight
     }
+    if (controller.resizeHandle) {
+      controller.resizeHandle.frame = {
+        x: bounds.width - 44,
+        y: bounds.height - 44,
+        width: 44,
+        height: 44
+      }
+    }
   }
 
   function layoutDocked(controller) {
@@ -61,27 +169,22 @@ var CardAskGPTPanelAPI = (function () {
       controller.hostExtension.window
     )
     var bounds = studyController.view.bounds
-    var preferredWidth = controller.app.osType === 2 ? 460 : 420
-    var width = Math.min(
-      preferredWidth,
-      Math.max(350, bounds.width * 0.44)
-    )
-    controller.view.frame = {
-      x: bounds.width - width - 10,
-      y: 8,
-      width: width,
-      height: bounds.height - 16
-    }
+    var frame = controller._preferredFrame
+      ? normalizePanelFrame(controller._preferredFrame, bounds)
+      : initialPanelFrame(controller, bounds)
+    controller.view.frame = frame
+    controller._preferredFrame = frame
     layoutSubviews(controller)
   }
 
   function setTemporaryChatEnabled(controller, enabled) {
     controller.temporaryChatEnabled = Boolean(enabled)
+    controller.chatURL = desiredChatURL(controller)
     updateTemporaryButton(controller)
   }
 
-  function cancelPendingCard(controller) {
-    controller.pendingPayload = null
+  function cancelPendingCards(controller) {
+    controller.pendingPayloads = null
     if (controller.webview) {
       controller.webview.evaluateJavaScript(
         "window.__mnCardAskGPTRunToken='cancelled';",
@@ -92,32 +195,82 @@ var CardAskGPTPanelAPI = (function () {
 
   function loadChatGPT(controller) {
     controller.isLoadingChat = true
+    controller.chatURL = desiredChatURL(controller)
     controller.webview.loadRequest(
       NSURLRequest.requestWithURL(NSURL.URLWithString(controller.chatURL))
     )
   }
 
-  function injectPendingCard(controller) {
-    if (!controller.pendingPayload) return
+  function injectPendingCards(controller) {
+    if (
+      controller.pendingPayloads === undefined ||
+      controller.pendingPayloads === null
+    ) {
+      return
+    }
     var script = CardAskGPTBridge.makeInjection(
-      controller.pendingPayload,
+      controller.pendingPayloads,
       controller.temporaryChatEnabled
     )
-    controller.webview.evaluateJavaScript(script, function (result) {
-      if (result !== "started" && result !== undefined && result !== null) {
-        controller.app.showHUD(
-          "ChatGPT 页面注入未启动：" + String(result),
-          controller.view.window,
-          2
-        )
-      }
-    })
+    controller.webview.evaluateJavaScript(script, function () {})
   }
 
-  function enqueueCard(controller, payload) {
-    controller.pendingPayload = payload
-    controller.view.hidden = false
-    controller.webview.hidden = false
+  function installClipboardBridge(controller) {
+    if (!controller.webview) return
+    controller.webview.evaluateJavaScript(
+      CardAskGPTBridge.makeClipboardBridge(),
+      function () {}
+    )
+  }
+
+  function handleClipboardRequest(controller) {
+    if (!controller.webview) return
+    controller.webview.evaluateJavaScript(
+      "(function(){var payload=window.__mnCardAskGPTClipboardPayload||null;" +
+        "window.__mnCardAskGPTClipboardPayload=null;" +
+        "return payload?JSON.stringify(payload):'';})()",
+      function (result) {
+        var serialized =
+          result === undefined || result === null ? "" : String(result)
+        if (!serialized) return
+        var payload = null
+        try {
+          payload = JSON.parse(serialized)
+        } catch (error) {
+          payload = { plainText: serialized }
+        }
+        if (!payload) return
+
+        var plainText = String(
+          payload.plainText || payload.markdown || ""
+        )
+        var html = String(payload.html || "")
+        var rtf = String(payload.rtf || "")
+        var markdown = String(payload.markdown || "")
+        if (!plainText && !html && !rtf && !markdown) return
+
+        var pasteboard = UIPasteboard.generalPasteboard()
+        var item = {}
+        if (plainText) item["public.utf8-plain-text"] = plainText
+        if (html) item["public.html"] = html
+        if (rtf) item["public.rtf"] = rtf
+        if (markdown) item["net.daringfireball.markdown"] = markdown
+
+        try {
+          pasteboard.items = [item]
+        } catch (error) {
+          pasteboard.string = plainText || html || rtf || markdown
+        }
+      }
+    )
+  }
+
+  function enqueueCards(controller, payloads, showPanel) {
+    controller.pendingPayloads = payloads
+    if (showPanel !== false) {
+      controller.view.hidden = false
+      controller.webview.hidden = false
+    }
 
     var currentURL = ""
     try {
@@ -126,57 +279,25 @@ var CardAskGPTPanelAPI = (function () {
       currentURL = ""
     }
 
-    if (!/^https:\/\/(www\.)?chatgpt\.com\//i.test(currentURL)) {
+    var currentIsTemporary = isTemporaryURL(currentURL)
+    if (
+      !/^https:\/\/(www\.)?chatgpt\.com\//i.test(currentURL) ||
+      currentIsTemporary !== Boolean(controller.temporaryChatEnabled)
+    ) {
       loadChatGPT(controller)
     } else {
       NSTimer.scheduledTimerWithTimeInterval(0.15, false, function () {
-        injectPendingCard(controller)
+        injectPendingCards(controller)
       })
     }
   }
 
   function handleBridgeStatus(controller, url) {
     var codeMatch = /[?&]code=([^&]*)/.exec(url)
-    var detailMatch = /[?&]detail=([^&]*)/.exec(url)
     var code = codeMatch ? decodeURIComponent(codeMatch[1]) : "failed"
-    var detail = detailMatch ? decodeURIComponent(detailMatch[1]) : ""
 
-    if (code === "uploaded") {
-      controller.pendingPayload = null
-      var temporaryStatus = detail.split("|")[1] || ""
-      var suffix =
-        controller.temporaryChatEnabled && temporaryStatus === "not-found"
-          ? "；未找到“临时聊天”按钮，请在网页中手动开启"
-          : ""
-      controller.app.showHUD(
-        "卡片图片已放入 ChatGPT 输入框" + suffix,
-        controller.view.window,
-        suffix ? 3 : 1.6
-      )
-    } else if (code === "login-required") {
-      controller.app.showHUD(
-        "请先在右侧网页登录 ChatGPT，登录后再次点击卡片",
-        controller.view.window,
-        4
-      )
-    } else if (code === "render-failed") {
-      controller.app.showHUD(
-        "卡片图片生成失败：" + detail,
-        controller.view.window,
-        3
-      )
-    } else if (code === "upload-failed") {
-      controller.app.showHUD(
-        "ChatGPT 页面拒绝自动附图：" + detail,
-        controller.view.window,
-        4
-      )
-    } else {
-      controller.app.showHUD(
-        "发送卡片时发生错误：" + detail,
-        controller.view.window,
-        4
-      )
+    if (code === "uploaded" || code === "selection-cleared") {
+      controller.pendingPayloads = null
     }
   }
 
@@ -185,17 +306,22 @@ var CardAskGPTPanelAPI = (function () {
     {
       viewDidLoad: function () {
         self.app = Application.sharedInstance()
-        self.pendingPayload = null
+        self.pendingPayloads = null
         if (
           self.temporaryChatEnabled === undefined ||
           self.temporaryChatEnabled === null
         ) {
           self.temporaryChatEnabled = true
         }
-        self.chatURL = "https://chatgpt.com/"
+        self.chatURL = desiredChatURL(self)
         self.isLoadingChat = false
+        self._moveStartLocation = null
+        self._moveStartFrame = null
+        self._resizeStartLocation = null
+        self._resizeStartFrame = null
 
         self.view.backgroundColor = UIColor.colorWithHexString("#eee9dc")
+        self.view.autoresizingMask = 0
         self.view.layer.cornerRadius = 14
         self.view.layer.masksToBounds = true
         self.view.layer.shadowOffset = { width: 0, height: 1 }
@@ -219,7 +345,15 @@ var CardAskGPTPanelAPI = (function () {
           0
         )
         self.titleButton.titleLabel.font = UIFont.boldSystemFontOfSize(13)
+        self.titleButton.userInteractionEnabled = false
         self.view.addSubview(self.titleButton)
+
+        self.dragRegion = new UIView({ x: 0, y: 0, width: 200, height: 36 })
+        self.dragRegion.backgroundColor = UIColor.clearColor()
+        self.dragRegion.userInteractionEnabled = true
+        var movePan = new UIPanGestureRecognizer(self, "handleMove:")
+        self.dragRegion.addGestureRecognizer(movePan)
+        self.view.addSubview(self.dragRegion)
 
         self.temporaryButton = UIButton.buttonWithType(0)
         self.temporaryButton.addTargetActionForControlEvents(
@@ -259,11 +393,144 @@ var CardAskGPTPanelAPI = (function () {
         )
         self.view.addSubview(self.closeButton)
 
+        self.resizeHandle = new UIView({
+          x: 0,
+          y: 0,
+          width: 44,
+          height: 44
+        })
+        self.resizeHandle.backgroundColor = UIColor.clearColor()
+        self.resizeHandle.userInteractionEnabled = true
+
+        self.resizeArcClip = new UIView({
+          x: 18,
+          y: 18,
+          width: 20,
+          height: 20
+        })
+        self.resizeArcClip.backgroundColor = UIColor.clearColor()
+        self.resizeArcClip.layer.masksToBounds = true
+        self.resizeArcClip.userInteractionEnabled = false
+
+        self.resizeArc = new UIView({
+          x: -16,
+          y: -16,
+          width: 34,
+          height: 34
+        })
+        self.resizeArc.backgroundColor = UIColor.clearColor()
+        self.resizeArc.layer.cornerRadius = 17
+        self.resizeArc.layer.borderWidth = 3
+        self.resizeArc.layer.borderColor =
+          UIColor.colorWithHexString("#4f4a41")
+        self.resizeArc.userInteractionEnabled = false
+        self.resizeArcClip.addSubview(self.resizeArc)
+        self.resizeHandle.addSubview(self.resizeArcClip)
+
+        var resizePan = new UIPanGestureRecognizer(self, "handleResize:")
+        self.resizeHandle.addGestureRecognizer(resizePan)
+        self.view.addSubview(self.resizeHandle)
+
         updateTemporaryButton(self)
         layoutSubviews(self)
       },
 
       viewWillLayoutSubviews: function () {
+        layoutSubviews(self)
+      },
+
+      handleMove: function (gesture) {
+        if (!self.view || !self.view.superview) return
+        if (gesture.state === 1) {
+          self._moveStartLocation = gesture.locationInView(self.view.superview)
+          self._moveStartFrame = self.view.frame
+          return
+        }
+        if (gesture.state === 3 || gesture.state === 4) {
+          savePanelFrame(self)
+          self._moveStartLocation = null
+          self._moveStartFrame = null
+          return
+        }
+        if (
+          gesture.state !== 2 ||
+          !self._moveStartLocation ||
+          !self._moveStartFrame
+        ) {
+          return
+        }
+        var location = gesture.locationInView(self.view.superview)
+        var dx = location.x - self._moveStartLocation.x
+        var dy = location.y - self._moveStartLocation.y
+        var frame = normalizePanelFrame(
+          {
+            x: self._moveStartFrame.x + dx,
+            y: self._moveStartFrame.y + dy,
+            width: self._moveStartFrame.width,
+            height: self._moveStartFrame.height
+          },
+          self.view.superview.bounds
+        )
+        self.view.frame = frame
+        self._preferredFrame = frame
+      },
+
+      handleResize: function (gesture) {
+        if (!self.view || !self.view.superview) return
+        if (gesture.state === 1) {
+          self._resizeStartLocation = gesture.locationInView(
+            self.view.superview
+          )
+          self._resizeStartFrame = self.view.frame
+          return
+        }
+        if (gesture.state === 3 || gesture.state === 4) {
+          savePanelFrame(self)
+          self._resizeStartLocation = null
+          self._resizeStartFrame = null
+          return
+        }
+        if (
+          gesture.state !== 2 ||
+          !self._resizeStartLocation ||
+          !self._resizeStartFrame
+        ) {
+          return
+        }
+        var location = gesture.locationInView(self.view.superview)
+        var dx = location.x - self._resizeStartLocation.x
+        var dy = location.y - self._resizeStartLocation.y
+        var bounds = self.view.superview.bounds
+        var rightEdge = bounds.x + bounds.width - 8
+        var bottomEdge = bounds.y + bounds.height - 8
+        var maximumWidth = Math.max(
+          1,
+          rightEdge - self._resizeStartFrame.x
+        )
+        var maximumHeight = Math.max(
+          1,
+          bottomEdge - self._resizeStartFrame.y
+        )
+        var minimumWidth = Math.min(PANEL_MIN_WIDTH, maximumWidth)
+        var minimumHeight = Math.min(PANEL_MIN_HEIGHT, maximumHeight)
+        var width = clampNumber(
+          self._resizeStartFrame.width + dx,
+          minimumWidth,
+          maximumWidth
+        )
+        var height = clampNumber(
+          self._resizeStartFrame.height + dy,
+          minimumHeight,
+          maximumHeight
+        )
+        var frame = {
+          x: self._resizeStartFrame.x,
+          y: self._resizeStartFrame.y,
+          width: width,
+          height: height
+        }
+        self.view.frame = frame
+        self._preferredFrame = frame
         layoutSubviews(self)
       },
 
@@ -274,21 +541,16 @@ var CardAskGPTPanelAPI = (function () {
           "CardAskGPT_TemporaryChat"
         )
         updateTemporaryButton(self)
-        self.app.showHUD(
-          self.temporaryChatEnabled
-            ? "临时聊天默认开启"
-            : "临时聊天默认关闭",
-          self.view.window,
-          1.5
-        )
+        cancelPendingCards(self)
+        loadChatGPT(self)
       },
 
       reloadChatGPT: function () {
-        self.webview.reload()
+        loadChatGPT(self)
       },
 
       closePanel: function () {
-        cancelPendingCard(self)
+        cancelPendingCards(self)
         self.view.hidden = true
       },
 
@@ -298,6 +560,7 @@ var CardAskGPTPanelAPI = (function () {
 
       webViewDidFinishLoad: function (webView) {
         self.isLoadingChat = false
+        installClipboardBridge(self)
         var currentURL = ""
         try {
           currentURL = webView.request.URL().absoluteString()
@@ -305,25 +568,18 @@ var CardAskGPTPanelAPI = (function () {
           currentURL = ""
         }
         if (
-          self.pendingPayload &&
+          self.pendingPayloads !== null &&
+          self.pendingPayloads !== undefined &&
           /^https:\/\/(www\.)?chatgpt\.com\//i.test(currentURL)
         ) {
           NSTimer.scheduledTimerWithTimeInterval(0.8, false, function () {
-            injectPendingCard(self)
+            injectPendingCards(self)
           })
         }
       },
 
       webViewDidFailLoadWithError: function (webView, error) {
         self.isLoadingChat = false
-        var message = error && error.localizedDescription
-        if (message) {
-          self.app.showHUD(
-            "ChatGPT 网页加载失败：" + String(message),
-            self.view.window,
-            3
-          )
-        }
       },
 
       webViewShouldStartLoadWithRequestNavigationType: function (
@@ -331,6 +587,10 @@ var CardAskGPTPanelAPI = (function () {
         request
       ) {
         var url = request.URL().absoluteString()
+        if (/^cardaskgpt:\/\/clipboard/i.test(url)) {
+          handleClipboardRequest(self)
+          return false
+        }
         if (/^cardaskgpt:\/\/status/i.test(url)) {
           handleBridgeStatus(self, url)
           return false
@@ -345,8 +605,15 @@ var CardAskGPTPanelAPI = (function () {
       return PanelClass.new()
     },
     layoutDocked: layoutDocked,
+    normalizePanelFrame: normalizePanelFrame,
+    savePanelFrame: savePanelFrame,
+    desiredChatURL: desiredChatURL,
+    isTemporaryURL: isTemporaryURL,
     setTemporaryChatEnabled: setTemporaryChatEnabled,
-    enqueueCard: enqueueCard,
-    cancelPendingCard: cancelPendingCard
+    installClipboardBridge: installClipboardBridge,
+    handleClipboardRequest: handleClipboardRequest,
+    enqueueCards: enqueueCards,
+    cancelPendingCard: cancelPendingCards,
+    cancelPendingCards: cancelPendingCards
   }
 })()
