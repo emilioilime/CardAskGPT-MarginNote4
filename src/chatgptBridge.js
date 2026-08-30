@@ -1,8 +1,19 @@
 var CardAskGPTBridge = {
-  makeInjection: function (payloads, temporaryChatEnabled) {
+  makeInjection: function (payloads, temporaryChatEnabled, questionOptions) {
     var normalizedPayloads = Array.isArray(payloads) ? payloads : [payloads]
+    var normalizedOptions = questionOptions || {}
+    var questionMode =
+      normalizedOptions.mode === "question" ||
+      normalizedOptions.questionModeEnabled === true
+    var presetPrompt = questionMode
+      ? String(normalizedOptions.prompt || "").replace(/^\s+|\s+$/g, "")
+      : ""
+    var autoSend = questionMode && normalizedOptions.autoSend === true
     var serializedPayloads = JSON.stringify(normalizedPayloads)
     var serializedTemporary = temporaryChatEnabled ? "true" : "false"
+    var serializedQuestionMode = questionMode ? "true" : "false"
+    var serializedPresetPrompt = JSON.stringify(presetPrompt)
+    var serializedAutoSend = autoSend ? "true" : "false"
     var token = JSON.stringify(
       normalizedPayloads
         .map(function (payload) {
@@ -22,6 +33,15 @@ var CardAskGPTBridge = {
       "var wantTemporary=" +
       serializedTemporary +
       ";" +
+      "var questionMode=" +
+      serializedQuestionMode +
+      ";" +
+      "var presetPrompt=" +
+      serializedPresetPrompt +
+      ";" +
+      "var autoSend=" +
+      serializedAutoSend +
+      ";" +
       "var runToken=" +
       token +
       ";" +
@@ -38,6 +58,38 @@ var CardAskGPTBridge = {
       "}" +
       "function composer(){" +
       "return document.querySelector('#prompt-textarea')||document.querySelector('textarea[placeholder]')||document.querySelector('[contenteditable=\"true\"][data-virtualkeyboard]')||document.querySelector('main [contenteditable=\"true\"]');" +
+      "}" +
+      "function composerText(target){" +
+      "if(!target)return '';" +
+      "if(typeof target.value==='string')return target.value;" +
+      "return target.innerText||target.textContent||'';" +
+      "}" +
+      "function dispatchComposerInput(target,text){" +
+      "var event;" +
+      "try{event=new InputEvent('input',{bubbles:true,cancelable:false,inputType:'insertText',data:text});}" +
+      "catch(error){event=new Event('input',{bubbles:true,cancelable:false});}" +
+      "target.dispatchEvent(event);" +
+      "target.dispatchEvent(new Event('change',{bubbles:true}));" +
+      "}" +
+      "function setComposerText(target,text){" +
+      "if(!target)return false;" +
+      "text=String(text||'');" +
+      "target.focus();" +
+      "if(typeof target.value==='string'){" +
+      "var current=target,descriptor=null;" +
+      "while(current&&!descriptor){descriptor=Object.getOwnPropertyDescriptor(current,'value');current=Object.getPrototypeOf(current);}" +
+      "if(descriptor&&descriptor.set)descriptor.set.call(target,text);else target.value=text;" +
+      "}else{" +
+      "target.innerHTML='';" +
+      "if(text){var paragraph=document.createElement('p');paragraph.textContent=text;target.appendChild(paragraph);}" +
+      "}" +
+      "dispatchComposerInput(target,text);" +
+      "return true;" +
+      "}" +
+      "function clearManagedPrompt(target){" +
+      "var managed=String(window.__mnCardAskGPTManagedPrompt||'');" +
+      "if(managed&&composerText(target).replace(/^\\s+|\\s+$/g,'')===managed.replace(/^\\s+|\\s+$/g,''))setComposerText(target,'');" +
+      "window.__mnCardAskGPTManagedPrompt='';" +
       "}" +
       "async function waitForComposer(timeout){" +
       "var started=Date.now();" +
@@ -192,6 +244,29 @@ var CardAskGPTBridge = {
       "}" +
       "return target.parentElement||document;" +
       "}" +
+      "function sendButton(target){" +
+      "var scope=composerScope(target);" +
+      "var direct=scope.querySelector('button[data-testid=\"send-button\"],button[aria-label*=\"Send\" i],button[aria-label*=\"发送\"],button[aria-label*=\"提交\"]');" +
+      "if(direct)return direct;" +
+      "return Array.prototype.slice.call(scope.querySelectorAll('button,[role=\"button\"]')).find(function(button){" +
+      "return /^(send|发送|提交)(\\s|$)|send prompt/i.test(normalizedLabel(button));" +
+      "})||null;" +
+      "}" +
+      "function uploadIsBusy(target){" +
+      "var scope=composerScope(target);" +
+      "var busy=scope.querySelector('[data-state=\"uploading\"],[data-testid*=\"uploading\"],[aria-label*=\"Uploading\" i],[aria-label*=\"上传中\"]');" +
+      "return Boolean(busy);" +
+      "}" +
+      "async function waitForSendReady(target,timeout){" +
+      "var started=Date.now(),stable=0;" +
+      "while(active()&&Date.now()-started<timeout){" +
+      "var button=sendButton(target);" +
+      "var disabled=!button||button.disabled||String(button.getAttribute('aria-disabled')||'').toLowerCase()==='true';" +
+      "if(!disabled&&!uploadIsBusy(target)){stable+=1;if(stable>=3)return button;}else{stable=0;}" +
+      "await sleep(300);" +
+      "}" +
+      "return null;" +
+      "}" +
       "function attachmentRemovalButtons(target){" +
       "var scope=composerScope(target);" +
       "return Array.prototype.slice.call(scope.querySelectorAll('button,[role=\"button\"]')).filter(function(button){" +
@@ -239,6 +314,7 @@ var CardAskGPTBridge = {
       "if(!target){notify('login-required','未找到 ChatGPT 输入框');return;}" +
       "if(!cards.length){" +
       "var cleared=await clearExistingAttachments(target);" +
+      "clearManagedPrompt(target);" +
       "if(!active())return;" +
       "notify('selection-cleared','0|'+cleared);" +
       "return;" +
@@ -253,8 +329,24 @@ var CardAskGPTBridge = {
       "if(!active())return;" +
       "var method=await uploadFiles(files,target);" +
       "if(!method){notify('upload-failed','网页未暴露文件输入接口');return;}" +
+      "if(questionMode&&presetPrompt){" +
+      "setComposerText(target,presetPrompt);" +
+      "window.__mnCardAskGPTManagedPrompt=presetPrompt;" +
+      "}else{" +
+      "clearManagedPrompt(target);" +
+      "}" +
+      "if(autoSend&&presetPrompt){" +
+      "await sleep(900);" +
+      "if(!active())return;" +
+      "var submit=await waitForSendReady(target,18000);" +
+      "if(!submit){notify('auto-send-failed','图片和提示词已准备，但发送按钮不可用');return;}" +
+      "submit.click();" +
+      "window.__mnCardAskGPTManagedPrompt='';" +
+      "notify('sent',method+'|'+temporaryStatus+'|'+files.length+'|'+removed);" +
+      "return;" +
+      "}" +
       "target.focus();" +
-      "notify('uploaded',method+'|'+temporaryStatus+'|'+files.length+'|'+removed);" +
+      "notify(questionMode?'prepared':'uploaded',method+'|'+temporaryStatus+'|'+files.length+'|'+removed);" +
       "}catch(error){notify('failed',String(error&&error.message||error));}" +
       "})();" +
       "return 'started';" +
@@ -269,15 +361,98 @@ var CardAskGPTBridge = {
       "if(window.__mnCardAskGPTClipboardBridgeInstalled)return 'already-installed';" +
       "window.__mnCardAskGPTClipboardBridgeInstalled=true;" +
       "window.__mnCardAskGPTClipboardPayload=null;" +
+      "window.__mnCardAskGPTPasteTarget=Boolean(window.__mnCardAskGPTPasteTarget);" +
       "var signalCount=0;" +
       "function stringValue(value){return String(value===undefined||value===null?'':value);}" +
+      "function rtfEscape(value){" +
+      "var text=stringValue(value),result='';" +
+      "for(var i=0;i<text.length;i++){" +
+      "var code=text.charCodeAt(i),character=text.charAt(i);" +
+      "if(character==='\\\\'||character==='{'||character==='}')result+='\\\\'+character;" +
+      "else if(character==='\\n'||character==='\\r'){if(character==='\\n')result+='\\\\line ';}" +
+      "else if(character==='\\t')result+='\\\\tab ';" +
+      "else if(code>=32&&code<=126)result+=character;" +
+      "else result+='\\\\u'+String(code>32767?code-65536:code)+'?';" +
+      "}" +
+      "return result;" +
+      "}" +
+      "function rtfChildren(node){" +
+      "var result='',children=node&&node.childNodes||[];" +
+      "for(var i=0;i<children.length;i++)result+=rtfNode(children[i]);" +
+      "return result;" +
+      "}" +
+      "function rtfNode(node){" +
+      "if(!node)return '';" +
+      "if(node.nodeType===3)return rtfEscape(node.nodeValue||node.textContent||'');" +
+      "if(node.nodeType!==1)return '';" +
+      "var tag=stringValue(node.tagName).toLowerCase(),content=rtfChildren(node);" +
+      "if(tag==='br')return '\\\\line ';" +
+      "if(/^h[1-6]$/.test(tag))return '{\\\\b\\\\fs'+String(Math.max(28,44-(Number(tag.slice(1))-1)*4))+' '+content+'}\\\\par ';" +
+      "if(tag==='strong'||tag==='b')return '{\\\\b '+content+'}';" +
+      "if(tag==='em'||tag==='i')return '{\\\\i '+content+'}';" +
+      "if(tag==='u')return '{\\\\ul '+content+'\\\\ulnone }';" +
+      "if(tag==='s'||tag==='del')return '{\\\\strike '+content+'}';" +
+      "if(tag==='code')return '{\\\\f1 '+content+'}';" +
+      "if(tag==='pre')return '{\\\\f1\\\\fs22 '+content+'}\\\\par ';" +
+      "if(tag==='li'){" +
+      "var parentTag=stringValue(node.parentNode&&node.parentNode.tagName).toLowerCase();" +
+      "if(parentTag==='ol'){" +
+      "var siblings=node.parentNode&&node.parentNode.children||[],position=1;" +
+      "for(var siblingIndex=0;siblingIndex<siblings.length;siblingIndex++){if(siblings[siblingIndex]===node){position=siblingIndex+1;break;}}" +
+      "return rtfEscape(String(position)+'.')+'\\\\tab '+content+'\\\\par ';" +
+      "}" +
+      "return '\\\\bullet\\\\tab '+content+'\\\\par ';" +
+      "}" +
+      "if(tag==='blockquote')return '{\\\\li360\\\\i '+content+'}\\\\par ';" +
+      "if(tag==='td'||tag==='th')return content+'\\\\tab ';" +
+      "if(tag==='tr')return content+'\\\\par ';" +
+      "if(tag==='p'||tag==='div')return content+'\\\\par ';" +
+      "return content;" +
+      "}" +
+      "function rtfFromHtml(value){" +
+      "var html=stringValue(value);" +
+      "if(!html)return '';" +
+      "try{" +
+      "var holder=document.createElement('div');holder.innerHTML=html;" +
+      "return '{\\\\rtf1\\\\ansi\\\\ansicpg65001\\\\deff0{\\\\fonttbl{\\\\f0\\\\fswiss Helvetica;}{\\\\f1\\\\fmodern Menlo;}}\\\\viewkind4\\\\uc1\\\\pard\\\\f0\\\\fs24 '+rtfChildren(holder)+'}';" +
+      "}catch(error){return '';}" +
+      "}" +
       "function labelFor(element){" +
       "return [element&&element.getAttribute&&element.getAttribute('aria-label'),element&&element.getAttribute&&element.getAttribute('title'),element&&element.textContent].filter(Boolean).join(' ').replace(/\\s+/g,' ').trim();" +
       "}" +
       "function normalizedPayload(value,source){" +
       "var payload=typeof value==='string'?{plainText:value}:value||{};" +
-      "payload={plainText:stringValue(payload.plainText),html:stringValue(payload.html),rtf:stringValue(payload.rtf),markdown:stringValue(payload.markdown),source:source||payload.source||'copy'};" +
+      "payload={plainText:stringValue(payload.plainText),html:stringValue(payload.html),rtf:stringValue(payload.rtf),markdown:stringValue(payload.markdown),htmlUtf8Base64:stringValue(payload.htmlUtf8Base64),htmlAscii:stringValue(payload.htmlAscii),rtfUtf8Base64:stringValue(payload.rtfUtf8Base64),markdownUtf8Base64:stringValue(payload.markdownUtf8Base64),source:source||payload.source||'copy'};" +
+      "if(payload.html&&!payload.rtf)payload.rtf=rtfFromHtml(payload.html);" +
+      "if(payload.html&&!payload.htmlUtf8Base64)payload.htmlUtf8Base64=utf8Base64(htmlDocument(payload.html));" +
+      "if(payload.html&&!payload.htmlAscii)payload.htmlAscii=asciiHtml(htmlDocument(payload.html));" +
+      "if(payload.rtf&&!payload.rtfUtf8Base64)payload.rtfUtf8Base64=utf8Base64(payload.rtf);" +
+      "if(payload.markdown&&!payload.markdownUtf8Base64)payload.markdownUtf8Base64=utf8Base64(payload.markdown);" +
       "return payload;" +
+      "}" +
+      "function htmlDocument(value){" +
+      "var html=stringValue(value);" +
+      "if(!html)return '';" +
+      "if(/<html(?:\\s|>)/i.test(html)){" +
+      "if(!/<meta[^>]+charset\\s*=/i.test(html))html=html.replace(/<head(?:\\s[^>]*)?>/i,function(match){return match+'<meta charset=\"utf-8\">';});" +
+      "return html;" +
+      "}" +
+      "return '<!doctype html><html><head><meta charset=\"utf-8\"></head><body><!--StartFragment-->'+html+'<!--EndFragment--></body></html>';" +
+      "}" +
+      "function utf8Base64(value){" +
+      "try{return btoa(unescape(encodeURIComponent(stringValue(value))));}catch(error){return '';}" +
+      "}" +
+      "function asciiHtml(value){" +
+      "var text=stringValue(value),result='';" +
+      "for(var i=0;i<text.length;i++){" +
+      "var code=text.charCodeAt(i);" +
+      "if(code>=55296&&code<=56319&&i+1<text.length){" +
+      "var low=text.charCodeAt(i+1);" +
+      "if(low>=56320&&low<=57343){code=(code-55296)*1024+(low-56320)+65536;i+=1;}" +
+      "}" +
+      "result+=code>127?'&#x'+code.toString(16)+';':String.fromCharCode(code);" +
+      "}" +
+      "return result;" +
       "}" +
       "function hasContent(payload){return !!(payload.plainText||payload.html||payload.rtf||payload.markdown);}" +
       "function signal(value,source){" +
@@ -342,12 +517,22 @@ var CardAskGPTBridge = {
       "});" +
       "return Promise.all(tasks).then(function(){return payload;});" +
       "}" +
+      "var activeCopyContext=null;" +
+      "var activeCopyContextAt=0;" +
+      "function payloadForWriteText(text){" +
+      "var payload={plainText:stringValue(text)};" +
+      "if(activeCopyContext&&Date.now()-activeCopyContextAt<1800){" +
+      "if(activeCopyContext.html)payload.html=activeCopyContext.html;" +
+      "if(activeCopyContext.markdown)payload.markdown=stringValue(text);" +
+      "}" +
+      "return payload;" +
+      "}" +
       "try{" +
       "var clipboard=navigator.clipboard;" +
       "if(clipboard&&typeof clipboard.writeText==='function'){" +
       "var originalWriteText=clipboard.writeText;" +
       "installWrapper(clipboard,'writeText',function(text){" +
-      "signal({plainText:stringValue(text)},'clipboard-writeText');" +
+      "signal(payloadForWriteText(text),'clipboard-writeText');" +
       "return safeOriginalCall(originalWriteText,clipboard,text);" +
       "});" +
       "}" +
@@ -362,17 +547,17 @@ var CardAskGPTBridge = {
       "}catch(error){}" +
       "function htmlFor(element){return element?'<div>'+stringValue(element.innerHTML)+'</div>':'';}" +
       "function fallbackForButton(button,label){" +
+      "var responseScope=button.closest('[data-message-author-role=\"assistant\"]')||button.closest('[data-testid^=\"conversation-turn\"]')||button.closest('article');" +
       "var current=button;" +
-      "for(var depth=0;current&&depth<9;depth++,current=current.parentElement){" +
+      "for(var depth=0;current&&current!==responseScope&&depth<9;depth++,current=current.parentElement){" +
       "var code=current.querySelector&&current.querySelector('pre code,pre,[data-testid*=\"code\"],[class*=\"code-block\"] code');" +
       "if(code){" +
       "var codeText=stringValue(code.innerText||code.textContent);" +
       "if(codeText)return {plainText:codeText,markdown:/markdown/i.test(label)?codeText:''};" +
       "}" +
       "}" +
-      "var scope=button.closest('[data-message-author-role=\"assistant\"]')||button.closest('[data-testid^=\"conversation-turn\"]')||button.closest('article');" +
-      "if(!scope)return null;" +
-      "var content=scope.querySelector('.markdown,[class*=\"markdown\"],[class*=\"prose\"],[data-message-author-role=\"assistant\"]')||scope;" +
+      "if(!responseScope)return null;" +
+      "var content=responseScope.querySelector('.markdown,[class*=\"markdown\"],[class*=\"prose\"],[data-message-author-role=\"assistant\"]')||responseScope;" +
       "return {plainText:stringValue(content.innerText||content.textContent),html:htmlFor(content)};" +
       "}" +
       "document.addEventListener('click',function(event){" +
@@ -381,11 +566,26 @@ var CardAskGPTBridge = {
       "var label=labelFor(button);" +
       "var looksLikeCopy=/(copy|复制)/i.test(label)||/copy/i.test(stringValue(button.getAttribute&&button.getAttribute('data-testid')));" +
       "if(!looksLikeCopy||/(link|链接)/i.test(label))return;" +
+      "var fallbackPayload=fallbackForButton(button,label);" +
+      "activeCopyContext=fallbackPayload;" +
+      "activeCopyContextAt=Date.now();" +
       "var countBefore=signalCount;" +
       "setTimeout(function(){" +
       "if(signalCount!==countBefore)return;" +
-      "signal(fallbackForButton(button,label),'copy-button');" +
+      "signal(fallbackPayload,'copy-button');" +
       "},260);" +
+      "},true);" +
+      "document.addEventListener('pointerdown',function(){" +
+      "if(!window.__mnCardAskGPTPasteTarget)return;" +
+      "window.__mnCardAskGPTPasteTarget=false;" +
+      "setTimeout(function(){window.location.href='cardaskgpt://web-focus';},0);" +
+      "},true);" +
+      "document.addEventListener('paste',function(event){" +
+      "if(!window.__mnCardAskGPTPasteTarget)return;" +
+      "event.preventDefault();" +
+      "event.stopPropagation();" +
+      "window.__mnCardAskGPTPasteTarget=false;" +
+      "setTimeout(function(){window.location.href='cardaskgpt://paste-card';},0);" +
       "},true);" +
       "return 'installed';" +
       "})();"

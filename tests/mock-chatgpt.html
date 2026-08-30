@@ -123,6 +123,19 @@
         min-height: 48px;
         outline: none;
       }
+      #send-button {
+        float: right;
+        min-width: 88px;
+        margin-top: 10px;
+        padding: 8px 14px;
+        border: 0;
+        border-radius: 999px;
+        color: #fff;
+        background: #20211f;
+      }
+      #send-button:disabled {
+        opacity: 0.35;
+      }
     </style>
   </head>
   <body>
@@ -166,6 +179,15 @@
         <div id="previews"></div>
         <div id="prompt-textarea" contenteditable="true"></div>
         <input id="file-input" type="file" accept="image/*" multiple hidden />
+        <button
+          id="send-button"
+          type="submit"
+          data-testid="send-button"
+          aria-label="Send prompt"
+          disabled
+        >
+          发送
+        </button>
       </form>
     </main>
 
@@ -177,9 +199,22 @@
       const previews = document.querySelector("#previews")
       const answer = document.querySelector("#answer")
       const markdownCode = document.querySelector("#markdown-block code")
+      const answerMarkdown =
+        "# 这是 ChatGPT 的测试回答\n\n复制后应保留 **粗体**、*斜体*和代码格式。"
       const clipboardState = document.querySelector("#clipboard-state")
+      const prompt = document.querySelector("#prompt-textarea")
+      const sendButton = document.querySelector("#send-button")
+      window.fixtureSendCount = 0
       document.querySelector("form").addEventListener("submit", (event) => {
         event.preventDefault()
+        if (sendButton.disabled) return
+        window.fixtureSendCount += 1
+        window.fixtureLastSentPrompt = prompt.innerText || prompt.textContent
+        prompt.innerHTML = ""
+        sendButton.disabled = true
+      })
+      prompt.addEventListener("input", () => {
+        sendButton.disabled = !(prompt.innerText || prompt.textContent).trim()
       })
 
       temporary.addEventListener("click", () => {
@@ -229,16 +264,7 @@
 
       eval(CardAskGPTBridge.makeClipboardBridge())
       document.querySelector("#copy-answer").addEventListener("click", () => {
-        navigator.clipboard.write([
-          new ClipboardItem({
-            "text/plain": new Blob([answer.innerText], {
-              type: "text/plain"
-            }),
-            "text/html": new Blob([answer.innerHTML], {
-              type: "text/html"
-            })
-          })
-        ])
+        navigator.clipboard.writeText(answerMarkdown)
       })
       document
         .querySelector("#copy-markdown")
@@ -267,8 +293,8 @@
         ]
       })
 
-      window.injectFixture = (payloads) => {
-        eval(CardAskGPTBridge.makeInjection(payloads, true))
+      window.injectFixture = (payloads, options) => {
+        eval(CardAskGPTBridge.makeInjection(payloads, true, options))
       }
 
       window.injectFixture([

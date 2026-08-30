@@ -4,6 +4,11 @@ JSB.newAddon = function (mainPath) {
 
   var ADDON_TITLE = "Card → ChatGPT"
   var DEFAULTS_KEY = "CardAskGPT_TemporaryChat"
+  var CARD_SYNC_DEFAULTS_KEY = "CardAskGPT_CardSyncEnabled"
+  var QUESTION_MODE_DEFAULTS_KEY = "CardAskGPT_QuestionModeEnabled"
+  var PRESET_PROMPT_DEFAULTS_KEY = "CardAskGPT_PresetPrompt"
+  var AUTO_SEND_DEFAULTS_KEY = "CardAskGPT_AutoSendEnabled"
+  var DEFAULT_PRESET_PROMPT = "请根据图片中的卡片内容进行讲解。"
 
   function stringValue(value) {
     if (value === undefined || value === null) return ""
@@ -145,6 +150,16 @@ JSB.newAddon = function (mainPath) {
         extension.panel,
         Boolean(extension.storedTemporary)
       )
+      CardAskGPTPanelAPI.setCardSyncEnabled(
+        extension.panel,
+        Boolean(extension.cardSyncEnabled)
+      )
+      CardAskGPTPanelAPI.setQuestionSettings(
+        extension.panel,
+        Boolean(extension.questionModeEnabled),
+        extension.presetPrompt,
+        Boolean(extension.autoSendEnabled)
+      )
     }
 
     var studyController = extension.app.studyController(extension.window)
@@ -237,8 +252,17 @@ JSB.newAddon = function (mainPath) {
     if (!extension.enabled) return
     notes = notes || []
     var signature = selectionSignature(notes)
-    if (!signature && !extension.lastSelectionSignature) return
     var now = Date.now()
+    if (!extension.cardSyncEnabled) {
+      if (extension.panel) {
+        CardAskGPTPanelAPI.focusMarginNoteSelection(extension.panel)
+      }
+      extension.lastSelectionSignature = signature
+      extension.lastHandledAt = now
+      log("card sync paused; selection ignored from " + source)
+      return
+    }
+    if (!signature && !extension.lastSelectionSignature) return
     if (
       extension.lastSelectionSignature === signature &&
       now - extension.lastHandledAt < 650
@@ -317,6 +341,69 @@ JSB.newAddon = function (mainPath) {
         self.lastObservedSelectionSignature = ""
         self.selectionTimer = null
         self.focusTimer = null
+        self.cardSyncEnabled =
+          NSUserDefaults.standardUserDefaults().objectForKey(
+            CARD_SYNC_DEFAULTS_KEY
+          )
+        if (
+          self.cardSyncEnabled === undefined ||
+          self.cardSyncEnabled === null
+        ) {
+          self.cardSyncEnabled = true
+          NSUserDefaults.standardUserDefaults().setObjectForKey(
+            true,
+            CARD_SYNC_DEFAULTS_KEY
+          )
+        } else {
+          self.cardSyncEnabled = Boolean(self.cardSyncEnabled)
+        }
+
+        self.questionModeEnabled =
+          NSUserDefaults.standardUserDefaults().objectForKey(
+            QUESTION_MODE_DEFAULTS_KEY
+          )
+        if (
+          self.questionModeEnabled === undefined ||
+          self.questionModeEnabled === null
+        ) {
+          self.questionModeEnabled = false
+          NSUserDefaults.standardUserDefaults().setObjectForKey(
+            false,
+            QUESTION_MODE_DEFAULTS_KEY
+          )
+        } else {
+          self.questionModeEnabled = Boolean(self.questionModeEnabled)
+        }
+
+        self.presetPrompt =
+          NSUserDefaults.standardUserDefaults().objectForKey(
+            PRESET_PROMPT_DEFAULTS_KEY
+          )
+        self.presetPrompt = trimmed(self.presetPrompt)
+        if (!self.presetPrompt) {
+          self.presetPrompt = DEFAULT_PRESET_PROMPT
+          NSUserDefaults.standardUserDefaults().setObjectForKey(
+            self.presetPrompt,
+            PRESET_PROMPT_DEFAULTS_KEY
+          )
+        }
+
+        self.autoSendEnabled =
+          NSUserDefaults.standardUserDefaults().objectForKey(
+            AUTO_SEND_DEFAULTS_KEY
+          )
+        if (
+          self.autoSendEnabled === undefined ||
+          self.autoSendEnabled === null
+        ) {
+          self.autoSendEnabled = false
+          NSUserDefaults.standardUserDefaults().setObjectForKey(
+            false,
+            AUTO_SEND_DEFAULTS_KEY
+          )
+        } else {
+          self.autoSendEnabled = Boolean(self.autoSendEnabled)
+        }
 
         self.storedTemporary = NSUserDefaults.standardUserDefaults().objectForKey(
           DEFAULTS_KEY
@@ -339,6 +426,11 @@ JSB.newAddon = function (mainPath) {
         stopFocusPolling(self)
         unregisterNoteObserver(self)
         if (self.panel && self.panel.webview) {
+          CardAskGPTPanelAPI.savePersistentSession(self.panel)
+          if (self.panel.sessionSaveTimer) {
+            self.panel.sessionSaveTimer.invalidate()
+            self.panel.sessionSaveTimer = null
+          }
           self.panel.webview.stopLoading()
           self.panel.webview.delegate = null
         }
@@ -363,8 +455,7 @@ JSB.newAddon = function (mainPath) {
         self.lastObservedSelectionSignature = ""
         stopFocusPolling(self)
         if (self.panel) {
-          CardAskGPTPanelAPI.cancelPendingCard(self.panel)
-          self.panel.view.hidden = true
+          CardAskGPTPanelAPI.hidePanel(self.panel)
         }
         unregisterNoteObserver(self)
       },
@@ -392,7 +483,7 @@ JSB.newAddon = function (mainPath) {
           try {
             registerNoteObserver(self)
             var panel = ensurePanelAttached(self)
-            panel.view.hidden = true
+            CardAskGPTPanelAPI.showPanel(panel)
             startFocusPolling(self)
             log("enabled")
           } catch (error) {
@@ -402,8 +493,7 @@ JSB.newAddon = function (mainPath) {
         } else {
           stopFocusPolling(self)
           if (self.panel) {
-            CardAskGPTPanelAPI.cancelPendingCard(self.panel)
-            self.panel.view.hidden = true
+            CardAskGPTPanelAPI.hidePanel(self.panel)
           }
           log("disabled")
         }

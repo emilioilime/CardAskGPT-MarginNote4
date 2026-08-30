@@ -12,6 +12,8 @@ assert.match(source, /function currentSelectedNotes/)
 assert.match(source, /function selectionSignature/)
 assert.match(source, /function scheduleSelectionSync/)
 assert.match(source, /CardAskGPTPanelAPI\.enqueueCards/)
+assert.doesNotMatch(source, /pasteHandoffUntil/)
+assert.doesNotMatch(source, /selection reserved for clipboard paste/)
 assert.match(source, /notes\.map\(function \(note\)/)
 assert.match(
   source,
