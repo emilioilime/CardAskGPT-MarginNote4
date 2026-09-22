@@ -2,7 +2,7 @@
 
 Card → ChatGPT 是一款 MarginNote 4 插件。它会把当前选中的脑图卡片排版成图片，自动放入 MarginNote 内置的 ChatGPT 网页输入框，让用户可以直接针对卡片提问。
 
-插件使用用户已登录的 ChatGPT 网页账号，不需要 OpenAI API Key。
+插件使用用户已登录的 ChatGPT 网页账号，不需要 OpenAI API Key。这意味着免费 对话自由
 
 ![卡片图片生成示例](docs/images/card-preview.png)
 
