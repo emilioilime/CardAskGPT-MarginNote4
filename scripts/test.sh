@@ -17,5 +17,6 @@ node "$PROJECT_DIR/tests/panel-visibility.test.js"
 node "$PROJECT_DIR/tests/paste-routing.test.js"
 node "$PROJECT_DIR/tests/preset-question-mode.test.js"
 node "$PROJECT_DIR/tests/session-persistence.test.js"
+node "$PROJECT_DIR/tests/login-navigation.test.js"
 
 echo "All checks passed."

@@ -1,6 +1,6 @@
-# Card → ChatGPT for MarginNote 4
+# Card → ChatGPT for MarginNote 4 / 5
 
-Card → ChatGPT 是一款 MarginNote 4 插件。它会把当前选中的脑图卡片排版成图片，自动放入 MarginNote 内置的 ChatGPT 网页输入框，让用户可以直接针对卡片提问。
+Card → ChatGPT 是一款 MarginNote 插件，面向 MarginNote 4 / 5。它会把当前选中的脑图卡片排版成图片，自动放入 MarginNote 内置的 ChatGPT 网页输入框，让用户可以直接针对卡片提问。
 
 插件使用用户已登录的 ChatGPT 网页账号，不需要 OpenAI API Key。这意味着免费 对话自由
 
@@ -8,7 +8,9 @@ Card → ChatGPT 是一款 MarginNote 4 插件。它会把当前选中的脑图�
 
 ## 当前版本
 
-`v0.1.19`
+`v0.1.20`
+
+本次修复选卡时打断登录跳转、误重载当前对话，以及旧 Cookie 备份的误删和恢复状态判断问题。MarginNote 5.0.2 的环境检查、自动化回归和独立原生 WebKit 存储测试已完成；真实 ChatGPT 账号跨 MarginNote 重启与长时间使用的登录保持仍待验证。
 
 ## 当前已实现的功能
 
@@ -99,10 +101,13 @@ ChatGPT 窗口右侧提供大号悬浮的 `同步：开/停` 按钮。这个按�
 
 ### 7. ChatGPT 登录会话持久化
 
-- 使用 MarginNote 的持久网页数据容器。
-- 只备份 `chatgpt.com` 和 `openai.com` 的网页 Cookie。
-- Cookie 加密保存在 macOS 钥匙串，不会明文写入插件设置、代码、README 或日志。
-- 插件启动时会恢复尚未失效的 Cookie，使用过程中会定时更新备份。
+- 登录首先依赖 MarginNote 内嵌 WebKit 自身的网页数据存储；开关插件或隐藏窗口会复用已有网页视图。
+- 登录跳转期间点击卡片只排队保存选区，不重新打开首页；认证完成、返回 ChatGPT 后再处理图片。
+- ChatGPT 地址变化或移除 `temporary-chat` 参数时，不再因此重新加载当前对话。主动切换临时聊天或点击刷新时才打开对应入口。
+- 旧版 Cookie 备份仅在宿主向插件提供 `NSHTTPCookieStorage` 和 `SSKeychain` 等接口时可用，只处理 `chatgpt.com` 和 `openai.com`，并保存在系统钥匙串。
+- 空的 Foundation Cookie 列表不等于 WebKit 已退出登录，因此不会再据此删除备份；恢复时跳过过期 Cookie，优先保留现有 Cookie，失败后允许重试。
+- 观察到退出登录导航后会删除备份，避免恢复该次旧会话。
+- **MarginNote 5.0.2 的插件接口未直接开放 WebKit Cookie 存储读写。插件不能仅靠旧版备份代码保证登录持久化，更不能保证永不掉线。**
 - 用户主动退出登录、ChatGPT 使会话失效或触发安全验证时，仍可能需要重新登录。
 
 ### 8. 窗口移动与缩放
@@ -119,8 +124,8 @@ ChatGPT 窗口右侧提供大号悬浮的 `同步：开/停` 按钮。这个按�
 ## 安装
 
 1. 下载仓库中的 [`dist/CardAskGPT.mnaddon`](dist/CardAskGPT.mnaddon)。
-2. 双击 `.mnaddon` 文件，允许 MarginNote 4 安装或覆盖旧版。
-3. 完全退出并重新打开 MarginNote 4。
+2. 双击 `.mnaddon` 文件，允许 MarginNote 安装或覆盖旧版。
+3. 完全退出并重新打开 MarginNote。
 4. 打开一个学习集，点击左侧插件栏中的 **Card → ChatGPT** 图标。
 5. ChatGPT 窗口弹出后，首次使用请在内嵌网页中登录。
 
@@ -144,7 +149,7 @@ ChatGPT 窗口右侧提供大号悬浮的 `同步：开/停` 按钮。这个按�
 
 ## 运行要求
 
-- MarginNote 4.0 或更高版本；
+- MarginNote 4.0 或更高版本（本次环境检查为 MarginNote 5.0.2）；
 - macOS；
 - 可以在 MarginNote 内嵌网页中正常访问 ChatGPT；
 - ChatGPT 账号。
@@ -155,7 +160,7 @@ ChatGPT 窗口右侧提供大号悬浮的 `同步：开/停` 按钮。这个按�
 - 卡片内容只会在插件将其作为图片添加到用户当前 ChatGPT 网页时上传。
 - 默认的“仅图片”模式不会自动发送。
 - 只有用户在“预设提问”模式中主动开启自动发送后，插件才会代为发送。
-- ChatGPT/OpenAI Cookie 使用 macOS 钥匙串加密保存，不会提交到本仓库。
+- 宿主支持 Cookie 备份接口时，备份使用系统钥匙串保存，不会写入插件配置或提交到本仓库；接口不可用时由宿主 WebKit 管理网页数据。
 - 使用临时聊天前，请自行确认 ChatGPT 当前的数据处理规则。
 
 ## 已知限制
@@ -178,6 +183,17 @@ ChatGPT 窗口右侧提供大号悬浮的 `同步：开/停` 按钮。这个按�
 
 - `test.sh` 会执行 JavaScript 语法检查和全部回归测试。
 - `build.sh` 会生成 `dist/CardAskGPT.mnaddon`。
+
+可选的 macOS 原生存储测试（需要 macOS 14+ 与 Swift 工具链）：
+
+```bash
+swiftc tests/native-webkit-session.swift -o /tmp/cardaskgpt-native-webkit-test
+/tmp/cardaskgpt-native-webkit-test write
+/tmp/cardaskgpt-native-webkit-test read
+/tmp/cardaskgpt-native-webkit-test clean
+```
+
+此测试使用独立容器和 `.invalid` 域名的虚构 Cookie，验证 WebKit 与 Foundation 存储分离，以及持久 Cookie 跨进程保留。它不读取用户登录凭据，也不代表真实 ChatGPT 账号的登录或长期稳定性测试。
 
 ### 项目结构
 

@@ -48,6 +48,9 @@ const unrelatedCookie = {
 let storageCookies = [chatCookie, authCookie, unrelatedCookie]
 let restoredCookies = []
 let archivedCookies = []
+let keychainLocked = false
+let failCookieWrite = false
+let members
 const keychain = new Map()
 
 function nativeArray(items) {
@@ -72,7 +75,8 @@ const context = {
     }
   },
   JSB: {
-    defineClass() {
+    defineClass(name, methods) {
+      members = methods
       return {
         new() {
           return {}
@@ -90,6 +94,7 @@ const context = {
           this.acceptPolicy = value
         },
         setCookie(cookie) {
+          if (failCookieWrite) throw new Error("temporarily unavailable")
           restoredCookies.push(cookie)
         }
       }
@@ -130,6 +135,7 @@ const context = {
       return true
     },
     passwordForServiceAccount(service, account) {
+      if (keychainLocked) return ""
       return keychain.get(`${service}:${account}`) || ""
     },
     deletePasswordForServiceAccount(service, account) {
@@ -162,6 +168,52 @@ assert.deepEqual(
 
 storageCookies = []
 context.CardAskGPTPanelAPI.savePersistentSession({})
+assert.equal(keychain.size, 1, "an empty Foundation store must not erase WebKit's backup")
+
+const retryController = { persistentSessionRestored: false }
+keychainLocked = true
+assert.equal(context.CardAskGPTPanelAPI.restorePersistentSession(retryController), false)
+assert.equal(retryController.persistentSessionRestored, false)
+keychainLocked = false
+failCookieWrite = true
+assert.equal(context.CardAskGPTPanelAPI.restorePersistentSession(retryController), false)
+assert.equal(retryController.persistentSessionRestored, false)
+failCookieWrite = false
+assert.equal(context.CardAskGPTPanelAPI.restorePersistentSession(retryController), true)
+assert.equal(retryController.persistentSessionRestored, true)
+
+restoredCookies = []
+storageCookies = [{ ...chatCookie, value: "newer-rotated-session" }]
+assert.equal(context.CardAskGPTPanelAPI.restorePersistentSession({}), true)
+assert.equal(restoredCookies.length, 0, "do not overwrite an existing, newer browser session")
+
+storageCookies = [
+  chatCookie,
+  { ...authCookie, expiresDate: { timeIntervalSince1970: () => 1 } },
+  { ...authCookie, domain: "chatgpt.com.attacker.invalid" },
+  unrelatedCookie
+]
+assert.equal(context.CardAskGPTPanelAPI.savePersistentSession({}), true)
+assert.deepEqual(archivedCookies.map((cookie) => cookie.domain), [".chatgpt.com"])
+
+// An explicit sign-out must not be undone by restoring a previous backup.
+const signedOut = {}
+context.self = signedOut
+const navigation = (url) => members.webViewShouldStartLoadWithRequestNavigationType(
+  null, { URL: () => ({ absoluteString: () => url }) }
+)
+navigation("https://example.invalid/logout")
+assert.equal(keychain.size, 1)
+navigation("https://chatgpt.com/auth/logout")
 assert.equal(keychain.size, 0)
+assert.equal(context.CardAskGPTPanelAPI.savePersistentSession(signedOut), false)
+assert.equal(context.CardAskGPTPanelAPI.restorePersistentSession(signedOut), false)
+
+// MarginNote's plugin API may omit these native classes entirely. Previous
+// tests supplied mocks unconditionally, masking that unsupported path.
+delete context.NSHTTPCookieStorage
+delete context.SSKeychain
+assert.equal(context.CardAskGPTPanelAPI.savePersistentSession({}), false)
+assert.equal(context.CardAskGPTPanelAPI.restorePersistentSession({}), false)
 
 console.log("Persistent ChatGPT session test passed.")

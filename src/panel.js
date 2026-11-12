@@ -212,6 +212,21 @@ var CardAskGPTPanelAPI = (function () {
     return /[?&]temporary-chat=true(?:[&#]|$)/i.test(String(url || ""))
   }
 
+  function isChatPage(url) {
+    return (
+      /^https:\/\/(www\.)?chatgpt\.com(?:\/|$)/i.test(url) &&
+      !/^https:\/\/(www\.)?chatgpt\.com\/(?:auth|api\/auth)(?:\/|[?#]|$)/i.test(url)
+    )
+  }
+
+  function needsInitialChatLoad(controller) {
+    if (controller.isLoadingChat) return false
+    var url = currentWebURL(controller)
+    // An authentication form may be fully loaded on a different domain. Keep
+    // that navigation alive instead of restarting it whenever a card is clicked.
+    return !url || url === "about:blank"
+  }
+
   function layoutSubviews(controller) {
     var bounds = controller.view.bounds
     var toolbarHeight = 36
@@ -396,6 +411,21 @@ var CardAskGPTPanelAPI = (function () {
     return /(^|\.)(chatgpt\.com|openai\.com)$/.test(domain)
   }
 
+  function isUsableSessionCookie(cookie) {
+    if (!isChatGPTCookie(cookie)) return false
+    var expiry = cookieValue(cookie, "expiresDate")
+    if (!expiry) return true
+    var seconds = Number(cookieValue(expiry, "timeIntervalSince1970"))
+    return !seconds || seconds > Date.now() / 1000
+  }
+
+  function sessionCookies(storage) {
+    var source =
+      typeof storage.cookies === "function" ? storage.cookies() : storage.cookies
+    if (source === undefined || source === null) return null
+    return nativeArray(source).filter(isUsableSessionCookie)
+  }
+
   function sharedCookieStorage() {
     try {
       if (typeof NSHTTPCookieStorage === "undefined") return null
@@ -466,19 +496,14 @@ var CardAskGPTPanelAPI = (function () {
   }
 
   function savePersistentSession(controller) {
+    if (controller && controller.sessionLogoutObserved) return false
     var storage = sharedCookieStorage()
     if (!storage) return false
     try {
-      var source =
-        typeof storage.cookies === "function"
-          ? storage.cookies()
-          : storage.cookies
-      if (source === undefined || source === null) return false
-      var cookies = nativeArray(source).filter(isChatGPTCookie)
-      if (!cookies.length) {
-        keychainDeleteSession()
-        return true
-      }
+      var cookies = sessionCookies(storage)
+      // WebKit's cookie store need not mirror Foundation's store. An empty
+      // snapshot is not proof of logout and must not destroy a valid backup.
+      if (!cookies || !cookies.length) return false
       if (
         typeof NSMutableArray === "undefined" ||
         typeof NSKeyedArchiver === "undefined"
@@ -505,13 +530,21 @@ var CardAskGPTPanelAPI = (function () {
   }
 
   function restorePersistentSession(controller) {
+    if (controller && controller.sessionLogoutObserved) return false
     if (controller && controller.persistentSessionRestored) return true
-    if (controller) controller.persistentSessionRestored = true
     var storage = sharedCookieStorage()
     if (!storage) return false
-    var encoded = keychainReadSession()
-    if (!encoded) return false
     try {
+      // Never replace the browser's current state with an older backup. Login
+      // credentials can rotate while a previous snapshot remains in Keychain.
+      var current = sessionCookies(storage)
+      if (current === null) return false
+      if (current.length) {
+        if (controller) controller.persistentSessionRestored = true
+        return true
+      }
+      var encoded = keychainReadSession()
+      if (!encoded) return false
       if (
         typeof NSData === "undefined" ||
         typeof NSKeyedUnarchiver === "undefined"
@@ -521,14 +554,24 @@ var CardAskGPTPanelAPI = (function () {
       var data = dataFromBase64(encoded)
       if (!data) return false
       var restored = NSKeyedUnarchiver.unarchiveObjectWithData(data)
-      var cookies = nativeArray(restored).filter(isChatGPTCookie)
+      var cookies = nativeArray(restored).filter(isUsableSessionCookie)
       for (var index = 0; index < cookies.length; index++) {
         storage.setCookie(cookies[index])
       }
-      return cookies.length > 0
+      var successful = cookies.length > 0
+      if (successful && controller) controller.persistentSessionRestored = true
+      return successful
     } catch (error) {
       return false
     }
+  }
+
+  function observeSessionLogout(controller, url) {
+    if (!/^https:\/\/(?:[a-z0-9-]+\.)*(?:chatgpt\.com|openai\.com)\/(?:auth\/logout|logout|api\/auth\/signout)(?:[/?#]|$)/i.test(url)) {
+      return
+    }
+    controller.sessionLogoutObserved = true
+    keychainDeleteSession()
   }
 
   function resignResponderTree(view) {
@@ -683,12 +726,7 @@ var CardAskGPTPanelAPI = (function () {
     if (!controller || !controller.view || !controller.webview) return
     controller.view.hidden = false
     controller.webview.hidden = false
-    var currentURL = currentWebURL(controller)
-    if (
-      !/^https:\/\/(www\.)?chatgpt\.com\//i.test(currentURL) ||
-      isTemporaryURL(currentURL) !==
-        Boolean(controller.temporaryChatEnabled)
-    ) {
+    if (needsInitialChatLoad(controller)) {
       loadChatGPT(controller)
     }
   }
@@ -703,6 +741,8 @@ var CardAskGPTPanelAPI = (function () {
 
   function injectPendingCards(controller) {
     if (
+      controller.isLoadingChat ||
+      !isChatPage(currentWebURL(controller)) ||
       controller.pendingPayloads === undefined ||
       controller.pendingPayloads === null
     ) {
@@ -855,15 +895,9 @@ var CardAskGPTPanelAPI = (function () {
       controller.webview.hidden = false
     }
 
-    var currentURL = currentWebURL(controller)
-
-    var currentIsTemporary = isTemporaryURL(currentURL)
-    if (
-      !/^https:\/\/(www\.)?chatgpt\.com\//i.test(currentURL) ||
-      currentIsTemporary !== Boolean(controller.temporaryChatEnabled)
-    ) {
+    if (needsInitialChatLoad(controller)) {
       loadChatGPT(controller)
-    } else {
+    } else if (!controller.isLoadingChat && isChatPage(currentWebURL(controller))) {
       NSTimer.scheduledTimerWithTimeInterval(0.15, false, function () {
         injectPendingCards(controller)
       })
@@ -1414,7 +1448,7 @@ var CardAskGPTPanelAPI = (function () {
         if (
           self.pendingPayloads !== null &&
           self.pendingPayloads !== undefined &&
-          /^https:\/\/(www\.)?chatgpt\.com\//i.test(currentURL)
+          isChatPage(currentURL)
         ) {
           NSTimer.scheduledTimerWithTimeInterval(0.8, false, function () {
             injectPendingCards(self)
@@ -1447,6 +1481,7 @@ var CardAskGPTPanelAPI = (function () {
           handleBridgeStatus(self, url)
           return false
         }
+        observeSessionLogout(self, url)
         return true
       }
     }

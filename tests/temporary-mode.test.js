@@ -10,7 +10,6 @@ const source = fs.readFileSync(
 
 assert.match(source, /function desiredChatURL/)
 assert.match(source, /https:\/\/chatgpt\.com\/\?temporary-chat=true/)
-assert.match(source, /currentIsTemporary !== Boolean/)
 assert.match(
   source,
   /toggleTemporary:[\s\S]*?cancelPendingCards\(self\)[\s\S]*?loadChatGPT\(self\)/
